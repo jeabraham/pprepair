@@ -345,18 +345,17 @@ bool IOWorker::tagTriangulation(Triangulation &triangulation, TaggingVector &edg
 	
 	// Add all edges of a polygon
 	for (unsigned int currentPolygon = 0; currentPolygon < edgesToTag.size(); ++currentPolygon) {
-		
+	    for (Constraint_iterator cit = triangulation.constraints_begin(); cit != triangulation.constraints_end(); cit++) {
 		// Outer boundary
-		for (unsigned int currentEdge = 0; currentEdge < edgesToTag[currentPolygon].first.size(); ++currentEdge) {
-			previousVertex = triangulation.vertices_in_constraint_begin(edgesToTag[currentPolygon].first[currentEdge],
-                                                                  edgesToTag[currentPolygon].first[(currentEdge+1)%edgesToTag[currentPolygon].first.size()]);
+		Constraint_id cid = *cit;
+		//for (Constraint_id cid = cit->begin(); cid != cit->end(); cid++) {
+			previousVertex = triangulation.vertices_in_constraint_begin(cid);
 			// Check if the returned order is the same
 			if ((*previousVertex)->point() == edgesToTag[currentPolygon].first[currentEdge]->point()) sameOrder = true;
 			else sameOrder = false;
 			currentVertex = previousVertex;
 			++currentVertex;
-			while (currentVertex != triangulation.vertices_in_constraint_end(edgesToTag[currentPolygon].first[currentEdge],
-                                                                       edgesToTag[currentPolygon].first[(currentEdge+1)%edgesToTag[currentPolygon].first.size()])) {
+			while (currentVertex != triangulation.vertices_in_constraint_end(cid) {
 				if (sameOrder) {
 					if (!triangulation.is_edge(*previousVertex, *currentVertex, currentFace, incident)) {
 						std::cout << "\tError: Cannot find adjoining face to an edge from the edge list!" << std::endl;

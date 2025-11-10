@@ -80,8 +80,12 @@ typedef CGAL::Constrained_Delaunay_triangulation_2<K, TDS, PT> CDT;
 #ifdef TRIANGULATION_HIERARCHY
 typedef CGAL::Triangulation_hierarchy_2<CDT> CDTH;
 typedef CGAL::Constrained_triangulation_plus_2<CDTH> Triangulation;
+typedef CGAL::Constrained_triangulation_plus_2<CDTH>::Constraint_iterator Constraint_iterator;
+typedef CGAL::Constrained_triangulation_plus_2<CDTH>::Constraint_id Constraint_id;
 #else
 typedef CGAL::Constrained_triangulation_plus_2<CDT> Triangulation;
+typedef CGAL::Constrained_triangulation_plus_2<CDT>::Constraint_iterator Constraint_iterator;
+typedef CGAL::Constrained_triangulation_plus_2<CDT>::Constraint_id Constraint_id;
 #endif
 
 // Other types, for easy reading
