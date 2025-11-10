@@ -325,50 +325,49 @@ bool IOWorker::addToTriangulation(Triangulation &triangulation, TaggingVector &e
 }
 
 bool IOWorker::tagTriangulation(Triangulation &triangulation, TaggingVector &edgesToTag) {
-	
-	std::stack<Triangulation::Face_handle> stack;
-	Triangulation::Vertices_in_constraint_iterator previousVertex, currentVertex;
-	Triangulation::Face_handle currentFace;
-  Triangulation::Constraint_id cid;
-	int incident;
-	
-	// Add all edges of a polygon
-	for (unsigned int currentPolygon = 0; currentPolygon < edgesToTag.size(); ++currentPolygon) {
-		
-		// Outer boundary
-		for (unsigned int currentEdge = 0; currentEdge < edgesToTag[currentPolygon].first.size(); ++currentEdge) {
-      cid = edgesToTag[currentPolygon].first[currentEdge];
-			previousVertex = triangulation.vertices_in_constraint_begin(cid);
-			currentVertex = previousVertex;
-			++currentVertex;
-			while (currentVertex != triangulation.vertices_in_constraint_end(cid)) {
+  std::stack<Triangulation::Face_handle> stack;
+  Triangulation::Vertices_in_constraint_iterator previousVertex, currentVertex;
+  Triangulation::Face_handle currentFace;
+  int incident;
+
+  // Add all edges of each polygon
+  for (unsigned int currentPolygon = 0; currentPolygon < edgesToTag.size(); ++currentPolygon) {
+    // Outer boundary
+    for (unsigned int edgeIndex = 0; edgeIndex < edgesToTag[currentPolygon].first.size(); ++edgeIndex) {
+      Triangulation::Constraint_id cid = edgesToTag[currentPolygon].first[edgeIndex];
+
+      auto previousVertex = triangulation.vertices_in_constraint_begin(cid);
+      auto currentVertex = previousVertex;
+      ++currentVertex;
+
+      while (currentVertex != triangulation.vertices_in_constraint_end(cid)) {
         if (!triangulation.is_edge(*previousVertex, *currentVertex, currentFace, incident)) {
           std::cout << "\tError: Cannot find adjoining face to an edge from the edge list!" << std::endl;
           return false;
         }
-				previousVertex = currentVertex;
-				++currentVertex;
-				stack.push(currentFace);
-			}
-		}
-		
-		// Free memory for boundaries
-		edgesToTag[currentPolygon].first.clear();
-		edgesToTag[currentPolygon].second.clear();
-		
-		// Expand the tags
-		tagStack(stack, polygons[currentPolygon]);
-	}
-	
-	// Free remaining memory
-	edgesToTag.clear();
-	
-	// Tag the universe
-	currentFace = triangulation.infinite_face();
-	stack.push(currentFace);
-	tagStack(stack, &universe);
-	
-	return true;
+        previousVertex = currentVertex;
+        ++currentVertex;
+        stack.push(currentFace);
+      }
+    }
+
+    // Free memory for boundaries
+    edgesToTag[currentPolygon].first.clear();
+    edgesToTag[currentPolygon].second.clear();
+
+    // Expand the tags
+    tagStack(stack, polygons[currentPolygon]);
+  }
+
+  // Free remaining memory
+  edgesToTag.clear();
+
+  // Tag the universe
+  currentFace = triangulation.infinite_face();
+  stack.push(currentFace);
+  tagStack(stack, &universe);
+
+  return true;
 }
 
 bool IOWorker::makeAllHolesValid(Triangulation &triangulation) {
@@ -1564,25 +1563,33 @@ std::vector<Ring *> IOWorker::splitRing(Ring &ring) {
 	ring.clear();
 	
 	// STEP 2: Remove degenerate edges (not identical, so not caught during creation)
-	for (Triangulation::Subconstraint_iterator currentEdge = ringTriangulation.subconstraints_begin();
-       currentEdge != ringTriangulation.subconstraints_end();
-       ++currentEdge) {
-    //std::cout << "Checking subconstraint: <" << *(currentEdge->first.first) << ", " << *(currentEdge->first.second) << ">: " << ringTriangulation.number_of_enclosing_constraints(currentEdge->first.first, currentEdge->first.second) << " enclosing constraints." << std::endl;
-		// Subconstraint_iterator has a weird return value...
-		if (ringTriangulation.number_of_enclosing_constraints(currentEdge->first.first, currentEdge->first.second) % 2 == 0) {
-			Triangulation::Face_handle f;
-			int i;
-			ringTriangulation.is_edge(currentEdge->first.first, currentEdge->first.second, f, i);
-      if (ringTriangulation.is_constrained(std::pair<Triangulation::Face_handle, int>(f, i))) {
-        //std::cout << "Removing constraint..." << std::endl;
-        Triangulation::Constraint_id cid = ringTriangulation.insert_constraint(currentEdge->first.first, currentEdge->first.second);
-        ringTriangulation.remove_constraint(cid);
-      } else {
-        //std::cout << "Adding constraint..." << std::endl;
-        ringTriangulation.insert_constraint(currentEdge->first.first, currentEdge->first.second);
-      }
-		}
-	}
+    for (Triangulation::Subconstraint_iterator currentEdge = ringTriangulation.subconstraints_begin();
+         currentEdge != ringTriangulation.subconstraints_end();
+         ++currentEdge)
+    {
+        // Extract the vertex handles directly from the iterator
+        const auto& [v_source, v_target] = *currentEdge;
+
+        // Optional: debugging
+        // std::cout << "Checking edge: <" << *v_source << ", " << *v_target << ">\n";
+
+        if (ringTriangulation.number_of_enclosing_constraints(v_source, v_target) % 2 == 0) {
+            Triangulation::Face_handle f;
+            int i;
+
+            // Check if this edge exists and is constrained
+            if (ringTriangulation.is_edge(v_source, v_target, f, i)) {
+                if (ringTriangulation.is_constrained({f, i})) {
+                    Triangulation::Constraint_id cid = ringTriangulation.insert_constraint(v_source, v_target);
+                    ringTriangulation.remove_constraint(cid);
+                } else {
+                    ringTriangulation.insert_constraint(v_source, v_target);
+                }
+            }
+        }
+    }
+
+
 	
 	// STEP 3: Tag triangles
 	PolygonHandle interior, exterior;
