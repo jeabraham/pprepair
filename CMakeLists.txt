@@ -19,37 +19,44 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.5...3.29)
+cmake_policy(VERSION 3.5)
 
-project( pprepair )
+project(pprepair)
 
-if(NOT POLICY CMP0070 AND POLICY CMP0053)
-  # Only set CMP0053 to OLD with CMake<3.10, otherwise there is a warning.
-  cmake_policy(SET CMP0053 OLD)
-endif()
 
 if(POLICY CMP0071)
   cmake_policy(SET CMP0071 NEW)
 endif()
 
-set( CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS true )
- 
-if ( COMMAND cmake_policy )
-  cmake_policy( SET CMP0003 NEW )
+# Silence Boost policy warning on recent CMake
+if(POLICY CMP0167)
+  cmake_policy(SET CMP0167 OLD)
 endif()
 
-set( CMAKE_BUILD_TYPE "Release")
+set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS TRUE)
+set(CMAKE_BUILD_TYPE "Release")
+
 
 # CGAL
-find_package( CGAL REQUIRED )
+find_package(CGAL REQUIRED)
 
 if ( NOT CGAL_FOUND )
   message(SEND_ERROR "pprepair requires the CGAL library")
   return()
 endif()
 
-# include helper file
-include( ${CGAL_USE_FILE} )
+# Modern CGAL no longer defines CGAL_USE_FILE.
+# Instead, link against CGAL::CGAL and enable include dirs automatically.
+if (TARGET CGAL::CGAL)
+  message(STATUS "Using modern CGAL targets")
+else()
+  message(WARNING "CGAL::CGAL target not found; using legacy include pattern if available")
+  if (EXISTS "${CGAL_USE_FILE}")
+    include(${CGAL_USE_FILE})
+  endif()
+endif()
+
 
 # Boost
 find_package( Boost 1.50.0 REQUIRED )
@@ -79,7 +86,14 @@ set_property(TARGET pprepair PROPERTY CXX_STANDARD 17)
 
 add_to_cached_list( CGAL_EXECUTABLE_TARGETS pprepair )
 
-# Link the executable to CGAL and third-party libraries
-target_link_libraries(pprepair ${GDAL_LIBRARY} ${Boost_LIBRARIES})
+# Modern CGAL integration (replaces deprecated CGAL_USE_FILE)
+if (TARGET CGAL::CGAL)
+  message(STATUS "Using modern CGAL targets")
+  target_link_libraries(pprepair PRIVATE CGAL::CGAL ${GDAL_LIBRARY} ${Boost_LIBRARIES})
+else()
+  message(WARNING "Modern CGAL targets not found; falling back to legacy linkage")
+  target_include_directories(pprepair PRIVATE ${CGAL_INCLUDE_DIRS})
+  target_link_libraries(pprepair PRIVATE ${CGAL_LIBRARIES} ${GDAL_LIBRARY} ${Boost_LIBRARIES})
+endif()
 
 install(TARGETS pprepair DESTINATION bin)
