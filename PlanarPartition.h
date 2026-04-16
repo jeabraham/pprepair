@@ -32,6 +32,7 @@ public:
   
   // Operations
   bool addToTriangulation(const char *file, unsigned int schemaIndex = 0);
+  bool addQueryToTriangulation(const char *connection, const char *query, unsigned int schemaIndex = 0);
   
   bool tagTriangulation();
   bool makeAllHolesValid();
@@ -53,6 +54,7 @@ public:
   bool reconstructPolygons(bool removeVertices = false);
   
   bool exportPolygons(const char *file, bool withProvenance);
+  bool exportPolygonsToPostGIS(const char *connection, const char *tableName);
   bool exportTriangulation(const char *file, bool withNumberOfTags, bool withFields, bool withProvenance);
   
   void printInfo();

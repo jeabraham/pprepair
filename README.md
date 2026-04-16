@@ -37,6 +37,16 @@ After successful compilation, run:
 
     $ ./pprepair -i inputfile -o outputfile -fix
 
+For PostGIS input/output, use a PG connection string with a SQL query as input and append results to a PostGIS output table:
+
+    $ ./pprepair \
+      -pgi "PG:host=localhost dbname=mydb user=myuser password=mypassword" \
+      "select id, geom from parcel where taz = 25" \
+      -opg "PG:host=localhost dbname=mydb user=myuser password=mypassword" repaired_parcel \
+      -fix
+
+`-opg` creates the output table when missing and otherwise appends rows (id + geom only). It does not overwrite existing PostGIS tables.
+
 You can get all the (advanced) options by running pprepair with no arguments:
 
     $ ./pprepair

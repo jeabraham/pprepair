@@ -32,6 +32,7 @@ public:
   
   // Main operations
   bool addToTriangulation(Triangulation &triangulation, TaggingVector &edgesToTag, const char *file, unsigned int schemaIndex);
+  bool addQueryToTriangulation(Triangulation &triangulation, TaggingVector &edgesToTag, const char *connection, const char *query, unsigned int schemaIndex);
   bool tagTriangulation(Triangulation &triangulation, TaggingVector &edgesToTag);
   bool makeAllHolesValid(Triangulation &triangulation);
   bool splitRegions(Triangulation &triangulation, double ratio);
@@ -47,6 +48,7 @@ public:
   void removeVertices(Triangulation &triangulation);
   bool reconstructPolygons(Triangulation &triangulation, std::vector<std::pair<PolygonHandle *, Polygon> > &outputPolygons);
   bool exportPolygons(std::vector<std::pair<PolygonHandle *, Polygon> > &outputPolygons, const char *file, bool withProvenance);
+  bool exportPolygonsToPostGIS(std::vector<std::pair<PolygonHandle *, Polygon> > &outputPolygons, const char *connection, const char *tableName);
   bool exportTriangulation(Triangulation &t, const char *file, bool withNumberOfTags, bool withFields, bool withProvenance);
   
   // Printing functions
@@ -141,6 +143,7 @@ private:
   std::list<Triangulation::Vertex_handle> *getBoundary(Triangulation::Face_handle face, int edge, PolygonHandle *polygon);
   void addtoCount(std::map<PolygonHandle *, unsigned int> &count, PolygonHandle *ph);
   void addToLength(std::map<PolygonHandle *, double> &lengths, PolygonHandle *ph, double length);
+  bool processLayer(Triangulation &triangulation, TaggingVector &edgesToTag, OGRLayer *dataLayer, char *name, int currentLayer, unsigned int schemaIndex);
 };
 
 #endif

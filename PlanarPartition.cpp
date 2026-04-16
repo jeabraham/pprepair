@@ -60,6 +60,26 @@ bool PlanarPartition::addToTriangulation(const char *file, unsigned int schemaIn
   return returnValue;
 }
 
+bool PlanarPartition::addQueryToTriangulation(const char *connection, const char *query, unsigned int schemaIndex) {
+  if (state > TRIANGULATED) {
+    std::cerr << "Error: The triangulation has already been tagged. It cannot be modified!" << std::endl;
+    return false;
+  }
+
+  std::cout << "Adding polygons from PostGIS query to the triangulation..." << std::endl;
+  time_t thisTime = time(NULL);
+
+  bool returnValue = io.addQueryToTriangulation(triangulation, edgesToTag, connection, query, schemaIndex);
+  if (triangulation.number_of_faces() > 0) state = TRIANGULATED;
+
+  std::cout << "Polygons added (" << time(NULL)-thisTime << " s). The triangulation has now:" << std::endl;
+  std::cout << "\tVertices: " << triangulation.number_of_vertices() << std::endl;
+  std::cout << "\tEdges: " << triangulation.tds().number_of_edges() << std::endl;
+  std::cout << "\tTriangles: " << triangulation.number_of_faces() << std::endl;
+
+  return returnValue;
+}
+
 bool PlanarPartition::tagTriangulation() {
 	
 	if (state < TRIANGULATED) {
@@ -362,6 +382,21 @@ bool PlanarPartition::exportPolygons(const char *file, bool withProvenance) {
   bool returnValue = io.exportPolygons(outputPolygons, file, withProvenance);
 	
 	std::cout << "Polygons exported (" << time(NULL)-thisTime << " s)." << std::endl;
+  return returnValue;
+}
+
+bool PlanarPartition::exportPolygonsToPostGIS(const char *connection, const char *tableName) {
+  if (state < RECONSTRUCTED) {
+    std::cout << "Polygons have not been reconstructed. Nothing to export!" << std::endl;
+    return false;
+  }
+
+  std::cout << "Exporting polygons to PostGIS..." << std::endl;
+  time_t thisTime = time(NULL);
+
+  bool returnValue = io.exportPolygonsToPostGIS(outputPolygons, connection, tableName);
+
+  std::cout << "Polygons exported (" << time(NULL)-thisTime << " s)." << std::endl;
   return returnValue;
 }
 

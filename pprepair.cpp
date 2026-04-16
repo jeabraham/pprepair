@@ -39,7 +39,14 @@ int main(int argc, const char *argv[]) {
   bool processInOrder = false;
   
   std::list<std::pair<std::string, int> > inputFiles;
+  struct PostGISInput {
+    std::string connection;
+    std::string query;
+    int schemaIndex;
+  };
+  std::list<PostGISInput> postGISInputs;
   std::string outputFile, outputFileWithProvenance, taggedTriangulationOutputFile, triangulationOutputFile, triangulationOutputFileWithProvenance;
+  std::string postGISOutputConnection, postGISOutputTable;
   bool makeHolesValid = false, splitRegions = false, alsoUniverse = false, matchSchemata = false, bigData = false;
   double splitRegionsRatio = 0.0;
   std::list<std::pair<RepairMethod, std::string> > repairMethods;
@@ -50,9 +57,12 @@ int main(int argc, const char *argv[]) {
     std::cout << "    Simple:   pprepair [options]" << std::endl;
     std::cout << "    Advanced: pprepair -p [processing steps in order]" << std::endl;
     std::cout << "    Example:  ./pprepair -i \"myInput.shp\" -o \"myOutput.shp\" -fix" << std::endl;
+    std::cout << "    Example (PostGIS): ./pprepair -pgi \"PG:host=localhost dbname=mydb user=me password=secret\" \"select id, geom from parcel where taz=25\" -opg \"PG:host=localhost dbname=mydb user=me password=secret\" repair_output -fix" << std::endl;
     std::cout << "== Basic options ==" << std::endl;
     std::cout << "    -i filename [schemaindex] Add this file to the triangulation using this schema index" << std::endl;
+    std::cout << "    -pgi connection query [schemaindex] Add PostGIS query results to the triangulation" << std::endl;
     std::cout << "    -o filename  Output the reconstructed polygons in this file" << std::endl;
+    std::cout << "    -opg connection table  Append reconstructed polygons to a PostGIS table (create if needed)" << std::endl;
     std::cout << "    -fix  Automagically repair (same as -rrlb -rrrn)" << std::endl;
     std::cout << "    -d Dissolve the boundaries between regions with the same tag according to the schema index" << std::endl;
     std::cout << "== Possible steps (in usual processing order) ==" << std::endl;
@@ -75,8 +85,13 @@ int main(int argc, const char *argv[]) {
     std::cout << "    -bd Removes unnecessary vertices before reconstruction to support larger data sets (try if you get a segmentation fault)" << std::endl;
     std::cout << "    -rp  Reconstruct polygons" << std::endl;
     std::cout << "    -o filename  Output the reconstructed polygons in this file" << std::endl;
+    std::cout << "    -opg connection table  Append reconstructed polygons to this PostGIS table (id + geom only)" << std::endl;
     std::cout << "    -owp filename  Output the reconstructed polygons in this file, including the input file where they came from" << std::endl;
     std::cout << "    -pi  Print triangulation information" << std::endl;
+    std::cout << "== PostGIS notes ==" << std::endl;
+    std::cout << "    connection must be a GDAL PG connection string (starts with PG:)" << std::endl;
+    std::cout << "    query must return polygon/multipolygon geometry and an id field at schemaindex (default 0)" << std::endl;
+    std::cout << "    -opg appends rows only and never overwrites an existing PostGIS table" << std::endl;
     return 0;
   }
   
@@ -102,6 +117,29 @@ int main(int argc, const char *argv[]) {
         else inputFiles.push_back(std::pair<std::string, int>(argv[argNum], 0));
       } else {
         std::cerr << "Error: Missing filename argument for -i";
+        return 1;
+      }
+    }
+
+    // PostGIS query input
+    else if (strcmp(argv[argNum], "-pgi") == 0) {
+      if (argNum + 3 <= argc - 1 && argv[argNum+3][0] != '-') {
+        ++argNum;
+        std::string connection = argv[argNum];
+        ++argNum;
+        std::string query = argv[argNum];
+        if (processInOrder) pp.addQueryToTriangulation(connection.c_str(), query.c_str(), atoi(argv[argNum+1]));
+        else postGISInputs.push_back(PostGISInput{connection, query, atoi(argv[argNum+1])});
+        ++argNum;
+      } else if (argNum + 2 <= argc - 1 && argv[argNum+2][0] != '-') {
+        ++argNum;
+        std::string connection = argv[argNum];
+        ++argNum;
+        std::string query = argv[argNum];
+        if (processInOrder) pp.addQueryToTriangulation(connection.c_str(), query.c_str(), 0);
+        else postGISInputs.push_back(PostGISInput{connection, query, 0});
+      } else {
+        std::cerr << "Error: Missing connection or query argument for -pgi";
         return 1;
       }
     }
@@ -280,6 +318,25 @@ int main(int argc, const char *argv[]) {
         return 1;
       }
     }
+
+    // PostGIS output (append mode)
+    else if (strcmp(argv[argNum], "-opg") == 0) {
+      if (argNum + 2 <= argc - 1 && argv[argNum+1][0] != '-' && argv[argNum+2][0] != '-') {
+        ++argNum;
+        if (processInOrder) {
+          std::string connection = argv[argNum];
+          ++argNum;
+          pp.exportPolygonsToPostGIS(connection.c_str(), argv[argNum]);
+        } else {
+          postGISOutputConnection = argv[argNum];
+          ++argNum;
+          postGISOutputTable = argv[argNum];
+        }
+      } else {
+        std::cerr << "Error: Missing connection/table arguments for -opg";
+        return 1;
+      }
+    }
     
     // Print triangulation information
     else if (strcmp(argv[argNum], "-pi") == 0) {
@@ -297,10 +354,15 @@ int main(int argc, const char *argv[]) {
     
     // Process input
     if (inputFiles.size() == 0) {
-      std::cerr << "Error: No input files given.";
-      return 1;
-    } for (std::list<std::pair<std::string, int> >::iterator currentFile = inputFiles.begin(); currentFile != inputFiles.end(); ++currentFile)
+      if (postGISInputs.size() == 0) {
+        std::cerr << "Error: No input files given.";
+        return 1;
+      }
+    } else for (std::list<std::pair<std::string, int> >::iterator currentFile = inputFiles.begin(); currentFile != inputFiles.end(); ++currentFile)
       pp.addToTriangulation(currentFile->first.c_str(), currentFile->second);
+    for (std::list<PostGISInput>::iterator currentInput = postGISInputs.begin(); currentInput != postGISInputs.end(); ++currentInput) {
+      pp.addQueryToTriangulation(currentInput->connection.c_str(), currentInput->query.c_str(), currentInput->schemaIndex);
+    }
     
     // Tag
     pp.tagTriangulation();
@@ -382,13 +444,16 @@ int main(int argc, const char *argv[]) {
     if (matchSchemata) pp.matchSchemata();
     
     // Reconstruct polygons
-    if (outputFile.size() > 0 || outputFileWithProvenance.size() > 0) pp.reconstructPolygons(bigData);
+    if (outputFile.size() > 0 || outputFileWithProvenance.size() > 0 || (postGISOutputConnection.size() > 0 && postGISOutputTable.size() > 0)) pp.reconstructPolygons(bigData);
     
     // Output
     if (outputFile.size() > 0) pp.exportPolygons(outputFile.c_str(), false);
     
     // Output with provenance
     if (outputFileWithProvenance.size() > 0) pp.exportPolygons(outputFileWithProvenance.c_str(), true);
+
+    // Output to PostGIS
+    if (postGISOutputConnection.size() > 0 && postGISOutputTable.size() > 0) pp.exportPolygonsToPostGIS(postGISOutputConnection.c_str(), postGISOutputTable.c_str());
   }
   
   time_t totalTime = time(NULL)-startTime;
@@ -396,4 +461,3 @@ int main(int argc, const char *argv[]) {
   
   return 0;
 }
-

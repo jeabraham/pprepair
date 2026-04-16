@@ -182,10 +182,12 @@ void PolygonHandle::addField(Field *field) {
 }
 
 Field * PolygonHandle::getSchemaField() {
+	if (schemaIndex >= fields.size()) return NULL;
 	return fields[schemaIndex];
 }
 
 Field * PolygonHandle::getField(unsigned int i) {
+	if (i >= fields.size()) return NULL;
 	return fields[i];
 }
 
@@ -199,6 +201,10 @@ char * PolygonHandle::getOriginalFile() {
 
 unsigned int PolygonHandle::getLayer() {
 	return layer;
+}
+
+unsigned int PolygonHandle::getSchemaIndex() const {
+  return schemaIndex;
 }
 
 const bool PolygonHandle::isMultiPolygonHandle() {

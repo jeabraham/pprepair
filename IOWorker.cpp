@@ -24,6 +24,7 @@
 
 IOWorker::IOWorker() {
   startingSearchFace = Triangulation::Face_handle();
+  spatialReference = NULL;
 }
 
 bool IOWorker::addToTriangulation(Triangulation &triangulation, TaggingVector &edgesToTag, const char *file, unsigned int schemaIndex) {
@@ -42,285 +43,282 @@ bool IOWorker::addToTriangulation(Triangulation &triangulation, TaggingVector &e
 	int numberOfLayers = dataSource->GetLayerCount();
 	std::cout << "\tLayers: " << numberOfLayers << std::endl;
   
+  bool returnValue = true;
   // Read layer by layer
   for (int currentLayer = 0; currentLayer < numberOfLayers; currentLayer++) {
     OGRLayer *dataLayer = dataSource->GetLayer(currentLayer);
-    dataLayer->ResetReading();
-    OGRSpatialReference* tmp = dataLayer->GetSpatialRef();
-    if ( (tmp != NULL) && (spatialReference != NULL) ) {
-      spatialReference = tmp->Clone();
-    }
-		
-		long long numberOfPolygons = dataLayer->GetFeatureCount(true);
-		std::cout << "\tReading layer #" << currentLayer+1 << " (" << numberOfPolygons << " polygons)...";
-		polygons.reserve(polygons.size()+numberOfPolygons);
-    
-    // Check fields and the schema type
-    OGRFeatureDefn *layerDefinition = dataLayer->GetLayerDefn();
-    insertToStream(std::cout, layerDefinition, 1, schemaIndex);
-    
-    // If it's the first input file, assign the schema type of it
-    if (triangulation.number_of_faces() == 0) {
-      schemaFieldType = layerDefinition->GetFieldDefn(schemaIndex)->GetType();
-    } // Otherwise, check if it matches the previous one
-    else {
-      if (layerDefinition->GetFieldDefn(schemaIndex)->GetType() != schemaFieldType) {
-        std::cerr << "\tError: The schema field type in this layer is incompatible with the previous one. Skipped." << std::endl;
-        continue;
-      }
-    }
-    
-    // Save the field names and types
-		for (int currentField = 0; currentField < layerDefinition->GetFieldCount(); currentField++) {
-			OGRFieldDefn *fieldDefinition = layerDefinition->GetFieldDefn(currentField);
-			FieldDefinition *newField = new FieldDefinition(fieldDefinition->GetNameRef(), fieldDefinition->GetType(), fieldDefinition->GetJustify(), fieldDefinition->GetWidth(), fieldDefinition->GetPrecision());
-			unsigned int currentCheck;
-			for (currentCheck = 0; currentCheck < fields.size(); currentCheck++) {
-				if (newField->matches(fields[currentCheck])) break;
-			} if (currentCheck == (unsigned int)fields.size()) {
-				// It's a new field
-				fields.push_back(newField);
-				fieldEquivalencies[FieldDescriptor(name, currentLayer, currentField)] = ((unsigned int)fields.size())-1;
-			} else {
-				// The field matches an older one, don't add
-				delete newField;
-				fieldEquivalencies[FieldDescriptor(name, currentLayer, currentField)] = currentCheck;
-			}
-		}
-    
-    // Reads all features in this layer
-		OGRFeature *feature;
-		while ((feature = dataLayer->GetNextFeature()) != NULL) {
-      if (!feature->GetGeometryRef()) continue;
-			
-			// STEP 1: Get polygons from input
-			std::vector<std::list<Point> > outerRingsList;
-			std::vector<std::list<Point> > innerRingsList;
-			switch(feature->GetGeometryRef()->getGeometryType()) {
-          
-          // Most typical case, receiving polygons
-        case wkbPolygon:
-        case wkbPolygon25D: {
-					OGRPolygon *geometry = static_cast<OGRPolygon *>(feature->GetGeometryRef());
-					outerRingsList.push_back(std::list<Point>());
-					
-					// Get outer ring
-					for (int currentPoint = 0; currentPoint < geometry->getExteriorRing()->getNumPoints(); currentPoint++)
-						outerRingsList.back().push_back(Point(geometry->getExteriorRing()->getX(currentPoint),
-                                                  geometry->getExteriorRing()->getY(currentPoint)));
-					
-					// Get inner rings
-					innerRingsList.reserve(geometry->getNumInteriorRings());
-					for (int currentRing = 0; currentRing < geometry->getNumInteriorRings(); currentRing++) {
-						innerRingsList.push_back(std::list<Point>());
-						for (int currentPoint = 0; currentPoint < geometry->getInteriorRing(currentRing)->getNumPoints(); currentPoint++) {
-							innerRingsList.back().push_back(Point(geometry->getInteriorRing(currentRing)->getX(currentPoint),
-                                                    geometry->getInteriorRing(currentRing)->getY(currentPoint)));
-						}
-					} break;
-				}
-					
-          // Receiving multi polygons
-				case wkbMultiPolygon: {
-					OGRMultiPolygon *geometry = static_cast<OGRMultiPolygon *>(feature->GetGeometryRef());
-					
-					// Check each polygon
-					for (int currentPolygon = 0; currentPolygon < geometry->getNumGeometries(); currentPolygon++) {
-						OGRPolygon *thisGeometry = static_cast<OGRPolygon *>(geometry->getGeometryRef(currentPolygon));
-						outerRingsList.push_back(std::list<Point>());
-						
-						// Get outer ring
-						for (int currentPoint = 0; currentPoint < thisGeometry->getExteriorRing()->getNumPoints(); currentPoint++)
-							outerRingsList.back().push_back(Point(thisGeometry->getExteriorRing()->getX(currentPoint),
-                                                    thisGeometry->getExteriorRing()->getY(currentPoint)));
-						
-						// Get inner rings
-						innerRingsList.reserve(innerRingsList.size()+thisGeometry->getNumInteriorRings());
-						for (int currentRing = 0; currentRing < thisGeometry->getNumInteriorRings(); currentRing++) {
-							innerRingsList.push_back(std::list<Point>());
-							for (int currentPoint = 0; currentPoint < thisGeometry->getInteriorRing(currentRing)->getNumPoints(); currentPoint++) {
-								innerRingsList.back().push_back(Point(thisGeometry->getInteriorRing(currentRing)->getX(currentPoint),
-                                                      thisGeometry->getInteriorRing(currentRing)->getY(currentPoint)));
-							}
-						}
-					} break;
-				}
-          
-				default:
-					std::cerr << "\tFeature #" << feature->GetFID() << ": unsupported type (";
-					insertToStream(std::cout, feature->GetGeometryRef()->getGeometryType());
-					std::cerr << "). Skipped." << std::endl;
-					continue;
-					break;
-          
-          // TODO: Implement other cases: points, lines, containers with multiple features, etc.
-			}
-			
-			// STEP 2: Check validity of individual polygons
-			//  it's more efficient doing this during creation, but this is more readable and maintainable (check SVN v59).
-			//  After all, this is not the main focus here.
-			
-			std::vector<Polygon> polygonsVector;
-			// CHECKS ON VERTICES
-      
-      // Remove repeated vertices. One per ring is considered normal, since some specifications allow or require it (first == last).
-      for (unsigned int currentRing = 0; currentRing < outerRingsList.size(); ++currentRing) {
-        if (removeDuplicateVertices(outerRingsList[currentRing]) > 1)
-          std::cout << "\tFeature #" << feature->GetFID() << ": duplicate vertices in outer boundary #" << currentRing << ". Removed duplicates." << std::endl;
-      } for (unsigned int currentRing = 0; currentRing < innerRingsList.size(); ++currentRing) {
-        if (removeDuplicateVertices(innerRingsList[currentRing]) > 1)
-          std::cout << "\tFeature #" << feature->GetFID() << ": duplicate vertices in inner boundary #" << currentRing << ". Removed duplicates." << std::endl;
-      }
-      
-      // Trivial check for rings with less than 3 vertices. The ones with 3 or more vertices will be done in the triangulation
-      for (int currentRing = 0; currentRing < (int)outerRingsList.size(); ++currentRing) {
-        if (outerRingsList[currentRing].size() < 3) {
-          std::cout << "\tFeature #" << feature->GetFID() << ": less than 3 vertices in outer boundary #" << currentRing << ". Removed." << std::endl;
-          outerRingsList.erase(outerRingsList.begin()+currentRing);
-          --currentRing;
-        }
-      } for (int currentRing = 0; currentRing < (int)innerRingsList.size(); ++currentRing) {
-        if (innerRingsList[currentRing].size() < 3) {
-          std::cout << "\tFeature #" << feature->GetFID() << ": less than 3 vertices in inner boundary #" << currentRing << ". Removed." << std::endl;
-          innerRingsList.erase(innerRingsList.begin()+currentRing);
-          --currentRing;
-        }
-      }
-      
-      // CHECKS ON RINGS
-      
-      // Let's move on to the CGAL data structures for Rings
-      std::vector<Ring> outerRings;
-      std::vector<Ring> innerRings;
-      outerRings.reserve(outerRingsList.size());
-      innerRings.reserve(innerRingsList.size());
-      for (unsigned int currentRing = 0; currentRing < outerRingsList.size(); currentRing++) {
-        outerRings.push_back(Ring(outerRingsList[currentRing].begin(), outerRingsList[currentRing].end()));
-        outerRingsList[currentRing].clear();
-      } for (unsigned int currentRing = 0; currentRing < innerRingsList.size(); currentRing++) {
-        innerRings.push_back(Ring(innerRingsList[currentRing].begin(), innerRingsList[currentRing].end()));
-        innerRingsList[currentRing].clear();
-      }
-      
-      // Split self touching rings and correct winding
-      std::vector<Ring *> outerRingsToBuild;
-      std::vector<Ring *> innerRingsToClassify;
-      std::vector<std::vector<Ring> > innerRingsToBuild;
-      
-      // Get outer rings
-      for (unsigned int currentRings = 0; currentRings < outerRings.size(); currentRings++) {
-        if (!outerRings[currentRings].is_simple()) {
-          std::cout << "\tFeature #" << feature->GetFID() << " (" << outerRings[currentRings].size() << " vertices): self intersecting outer boundary #" << currentRings << ". Split." << std::endl;
-          std::vector<Ring *> receivedRings = splitRing(outerRings[currentRings]);
-          for (std::vector<Ring *>::iterator currentRing = receivedRings.begin(); currentRing != receivedRings.end(); ++currentRing) {
-            if ((*currentRing)->is_clockwise_oriented()) {
-              outerRingsToBuild.push_back(*currentRing);
-            } else {
-              innerRingsToClassify.push_back(*currentRing);
-            }
-          }
-        } else {
-          if (outerRings[currentRings].is_counterclockwise_oriented()) {
-            std::cout << "\tFeature #" << feature->GetFID() << ": incorrect winding in outer boundary #" << currentRings << ". Reversed." << std::endl;
-            outerRings[currentRings].reverse_orientation();
-          } outerRingsToBuild.push_back(new Ring(outerRings[currentRings]));
-          outerRings[currentRings].clear();
-        }
-      }
-      
-      // Get inner rings
-      for (unsigned int currentRings = 0; currentRings < innerRings.size(); currentRings++) {
-        if (!innerRings[currentRings].is_simple()) {
-          std::cout << "\tFeature #" << feature->GetFID() << " (" << innerRings[currentRings].size() << " vertices): self intersecting inner boundary #" << currentRings << ". Split." << std::endl;
-          std::vector<Ring *> receivedRings = splitRing(innerRings[currentRings]);
-          for (std::vector<Ring *>::iterator currentRing = receivedRings.begin(); currentRing != receivedRings.end(); ++currentRing) {
-            if ((*currentRing)->is_clockwise_oriented()) {
-              innerRingsToClassify.push_back(*currentRing);
-            } else {
-              outerRingsToBuild.push_back(*currentRing);
-            }
-          }
-        } else {
-          if (innerRings[currentRings].is_clockwise_oriented()) {
-            std::cout << "\tFeature #" << feature->GetFID() << ": incorrect winding in inner boundary #" << currentRings << ". Reversed." << std::endl;
-            innerRings[currentRings].reverse_orientation();
-          } innerRingsToClassify.push_back(new Ring(innerRings[currentRings]));
-          innerRings[currentRings].clear();
-        }
-      }
-      
-      // Make space for inner rings
-      for (std::vector<Ring *>::iterator currentRing = outerRingsToBuild.begin(); currentRing != outerRingsToBuild.end(); ++currentRing) {
-        innerRingsToBuild.push_back(std::vector<Ring>());
-      }
-      
-      // Put inner rings into the correct outer ring (and likely other ones). Incorrectly nested rings are found here.
-      if (outerRingsToBuild.size() == 0) {
-        // Outer ring had no area or there wasn't any. Delete all inner rings
-        std::cout << "\tFeature #" << feature->GetFID() << ": zero area outer boundary. Inner boundaries removed." << std::endl;
-        for (std::vector<Ring *>::iterator currentRing = innerRingsToClassify.begin(); currentRing != innerRingsToClassify.end(); ++currentRing) {
-          delete *currentRing;
-        }
-      }
-      
-      // Now check them and put them in place
-      else if (innerRingsToClassify.size() > 0) {
-        testRings(outerRingsToBuild, innerRingsToClassify, innerRingsToBuild, feature->GetFID());
-      }
-      
-      // Let's move on to CGAL data structures for Polygons
-      for (unsigned int currentPolygon = 0; currentPolygon < outerRingsToBuild.size(); ++currentPolygon) {
-        polygonsVector.push_back(Polygon(*outerRingsToBuild[currentPolygon], innerRingsToBuild[currentPolygon].begin(), innerRingsToBuild[currentPolygon].end()));
-      } outerRingsToBuild.clear();
-      innerRingsToBuild.clear();
-			
-			// STEP 3: Introduce edges as constraints in the triangulation
-      for (std::vector<Polygon>::iterator currentPolygon = polygonsVector.begin(); currentPolygon != polygonsVector.end(); ++currentPolygon) {
-				
-				// Create and save polygon handle
-				PolygonHandle *handle = new PolygonHandle(schemaIndex, fileNames.back(), currentLayer, feature->GetFID());
-				polygons.push_back(handle);
-				
-				// Save other attributes to put back later
-				copyFields(feature, handle);
-				
-				// Create edges vector for this handle
-				edgesToTag.push_back(std::pair<std::vector<Triangulation::Constraint_id>, std::vector<std::vector<Triangulation::Constraint_id>>>());
-				
-				// Insert edges into the triangulation and edges vector
-				for (Ring::Edge_const_iterator currentEdge = currentPolygon->outer_boundary().edges_begin();
-             currentEdge != currentPolygon->outer_boundary().edges_end();
-             ++currentEdge) {
-					Triangulation::Vertex_handle sourceVertex = triangulation.insert(currentEdge->source(), startingSearchFace);
-          startingSearchFace = triangulation.incident_faces(sourceVertex);
-					Triangulation::Vertex_handle targetVertex = triangulation.insert(currentEdge->target(), startingSearchFace);
-					Triangulation::Constraint_id cid = triangulation.insert_constraint(sourceVertex, targetVertex);
-          startingSearchFace = triangulation.incident_faces(targetVertex);
-					edgesToTag.back().first.push_back(cid);
-				} for (Polygon::Hole_const_iterator currentRing = currentPolygon->holes_begin(); currentRing != currentPolygon->holes_end(); ++currentRing) {
-					edgesToTag.back().second.push_back(std::vector<Triangulation::Constraint_id>());
-					for (Ring::Edge_const_iterator currentEdge = currentRing->edges_begin(); currentEdge != currentRing->edges_end(); ++currentEdge) {
-						Triangulation::Vertex_handle sourceVertex = triangulation.insert(currentEdge->source(), startingSearchFace);
-            startingSearchFace = triangulation.incident_faces(sourceVertex);
-						Triangulation::Vertex_handle targetVertex = triangulation.insert(currentEdge->target(), startingSearchFace);
-            Triangulation::Constraint_id cid = triangulation.insert_constraint(sourceVertex, targetVertex);
-            startingSearchFace = triangulation.incident_faces(targetVertex);
-						edgesToTag.back().second.back().push_back(cid);
-					}
-				}
-			}
-			
-			// Free memory
-			polygonsVector.clear();
-			
-			// Free OGR feature
-			OGRFeature::DestroyFeature(feature);
-		}
+    if (dataLayer == NULL) continue;
+    if (!processLayer(triangulation, edgesToTag, dataLayer, name, currentLayer, schemaIndex)) returnValue = false;
   }
   
   // Free OGR data source
 	GDALClose(dataSource);
   
+  return returnValue;
+}
+
+bool IOWorker::addQueryToTriangulation(Triangulation &triangulation, TaggingVector &edgesToTag, const char *connection, const char *query, unsigned int schemaIndex) {
+  GDALDataset *dataSource = (GDALDataset*) GDALOpenEx(connection, GDAL_OF_READONLY | GDAL_OF_VECTOR, NULL, NULL, NULL);
+  if (dataSource == NULL) {
+    std::cerr << "Error: Could not open PostGIS connection." << std::endl;
+    return false;
+  }
+
+  char *name = new char[strlen(connection)+1];
+  strcpy(name, connection);
+  fileNames.push_back(name);
+  std::cout << "\tConnection: " << connection << std::endl;
+  std::cout << "\tType: " << dataSource->GetDriverName() << std::endl;
+  std::cout << "\tQuery: " << query << std::endl;
+
+  OGRLayer *queryLayer = dataSource->ExecuteSQL(query, NULL, NULL);
+  if (queryLayer == NULL) {
+    std::cerr << "\tError: Could not execute PostGIS query." << std::endl;
+    GDALClose(dataSource);
+    return false;
+  }
+
+  bool returnValue = processLayer(triangulation, edgesToTag, queryLayer, name, 0, schemaIndex);
+  dataSource->ReleaseResultSet(queryLayer);
+  GDALClose(dataSource);
+  return returnValue;
+}
+
+bool IOWorker::processLayer(Triangulation &triangulation, TaggingVector &edgesToTag, OGRLayer *dataLayer, char *name, int currentLayer, unsigned int schemaIndex) {
+  dataLayer->ResetReading();
+  OGRSpatialReference* tmp = dataLayer->GetSpatialRef();
+  if ((tmp != NULL) && (spatialReference == NULL)) {
+    spatialReference = tmp->Clone();
+  }
+
+  long long numberOfPolygons = dataLayer->GetFeatureCount(true);
+  std::cout << "\tReading layer #" << currentLayer+1 << " (" << numberOfPolygons << " polygons)...";
+  polygons.reserve(polygons.size()+numberOfPolygons);
+
+  OGRFeatureDefn *layerDefinition = dataLayer->GetLayerDefn();
+  if (layerDefinition == NULL) {
+    std::cerr << "\tError: Could not read layer definition. Skipped." << std::endl;
+    return false;
+  }
+  if (schemaIndex >= (unsigned int)layerDefinition->GetFieldCount()) {
+    std::cerr << "\tError: Schema field index " << schemaIndex << " is outside available fields. Skipped." << std::endl;
+    return false;
+  }
+  insertToStream(std::cout, layerDefinition, 1, schemaIndex);
+
+  if (triangulation.number_of_faces() == 0) {
+    schemaFieldType = layerDefinition->GetFieldDefn(schemaIndex)->GetType();
+  } else if (layerDefinition->GetFieldDefn(schemaIndex)->GetType() != schemaFieldType) {
+    std::cerr << "\tError: The schema field type in this layer is incompatible with the previous one. Skipped." << std::endl;
+    return false;
+  }
+
+  for (int currentField = 0; currentField < layerDefinition->GetFieldCount(); currentField++) {
+    OGRFieldDefn *fieldDefinition = layerDefinition->GetFieldDefn(currentField);
+    FieldDefinition *newField = new FieldDefinition(fieldDefinition->GetNameRef(), fieldDefinition->GetType(), fieldDefinition->GetJustify(), fieldDefinition->GetWidth(), fieldDefinition->GetPrecision());
+    unsigned int currentCheck;
+    for (currentCheck = 0; currentCheck < fields.size(); currentCheck++) {
+      if (newField->matches(fields[currentCheck])) break;
+    } if (currentCheck == (unsigned int)fields.size()) {
+      fields.push_back(newField);
+      fieldEquivalencies[FieldDescriptor(name, currentLayer, currentField)] = ((unsigned int)fields.size())-1;
+    } else {
+      delete newField;
+      fieldEquivalencies[FieldDescriptor(name, currentLayer, currentField)] = currentCheck;
+    }
+  }
+
+  OGRFeature *feature;
+  while ((feature = dataLayer->GetNextFeature()) != NULL) {
+    if (!feature->GetGeometryRef()) {
+      OGRFeature::DestroyFeature(feature);
+      continue;
+    }
+
+    std::vector<std::list<Point> > outerRingsList;
+    std::vector<std::list<Point> > innerRingsList;
+    switch(feature->GetGeometryRef()->getGeometryType()) {
+      case wkbPolygon:
+      case wkbPolygon25D: {
+        OGRPolygon *geometry = static_cast<OGRPolygon *>(feature->GetGeometryRef());
+        outerRingsList.push_back(std::list<Point>());
+
+        for (int currentPoint = 0; currentPoint < geometry->getExteriorRing()->getNumPoints(); currentPoint++)
+          outerRingsList.back().push_back(Point(geometry->getExteriorRing()->getX(currentPoint),
+                                                geometry->getExteriorRing()->getY(currentPoint)));
+
+        innerRingsList.reserve(geometry->getNumInteriorRings());
+        for (int currentRing = 0; currentRing < geometry->getNumInteriorRings(); currentRing++) {
+          innerRingsList.push_back(std::list<Point>());
+          for (int currentPoint = 0; currentPoint < geometry->getInteriorRing(currentRing)->getNumPoints(); currentPoint++) {
+            innerRingsList.back().push_back(Point(geometry->getInteriorRing(currentRing)->getX(currentPoint),
+                                                  geometry->getInteriorRing(currentRing)->getY(currentPoint)));
+          }
+        } break;
+      }
+      case wkbMultiPolygon: {
+        OGRMultiPolygon *geometry = static_cast<OGRMultiPolygon *>(feature->GetGeometryRef());
+
+        for (int currentPolygon = 0; currentPolygon < geometry->getNumGeometries(); currentPolygon++) {
+          OGRPolygon *thisGeometry = static_cast<OGRPolygon *>(geometry->getGeometryRef(currentPolygon));
+          outerRingsList.push_back(std::list<Point>());
+
+          for (int currentPoint = 0; currentPoint < thisGeometry->getExteriorRing()->getNumPoints(); currentPoint++)
+            outerRingsList.back().push_back(Point(thisGeometry->getExteriorRing()->getX(currentPoint),
+                                                  thisGeometry->getExteriorRing()->getY(currentPoint)));
+
+          innerRingsList.reserve(innerRingsList.size()+thisGeometry->getNumInteriorRings());
+          for (int currentRing = 0; currentRing < thisGeometry->getNumInteriorRings(); currentRing++) {
+            innerRingsList.push_back(std::list<Point>());
+            for (int currentPoint = 0; currentPoint < thisGeometry->getInteriorRing(currentRing)->getNumPoints(); currentPoint++) {
+              innerRingsList.back().push_back(Point(thisGeometry->getInteriorRing(currentRing)->getX(currentPoint),
+                                                    thisGeometry->getInteriorRing(currentRing)->getY(currentPoint)));
+            }
+          }
+        } break;
+      }
+      default:
+        std::cerr << "\tFeature #" << feature->GetFID() << ": unsupported type (";
+        insertToStream(std::cout, feature->GetGeometryRef()->getGeometryType());
+        std::cerr << "). Skipped." << std::endl;
+        OGRFeature::DestroyFeature(feature);
+        continue;
+        break;
+    }
+
+    std::vector<Polygon> polygonsVector;
+
+    for (unsigned int currentRing = 0; currentRing < outerRingsList.size(); ++currentRing) {
+      if (removeDuplicateVertices(outerRingsList[currentRing]) > 1)
+        std::cout << "\tFeature #" << feature->GetFID() << ": duplicate vertices in outer boundary #" << currentRing << ". Removed duplicates." << std::endl;
+    } for (unsigned int currentRing = 0; currentRing < innerRingsList.size(); ++currentRing) {
+      if (removeDuplicateVertices(innerRingsList[currentRing]) > 1)
+        std::cout << "\tFeature #" << feature->GetFID() << ": duplicate vertices in inner boundary #" << currentRing << ". Removed duplicates." << std::endl;
+    }
+
+    for (int currentRing = 0; currentRing < (int)outerRingsList.size(); ++currentRing) {
+      if (outerRingsList[currentRing].size() < 3) {
+        std::cout << "\tFeature #" << feature->GetFID() << ": less than 3 vertices in outer boundary #" << currentRing << ". Removed." << std::endl;
+        outerRingsList.erase(outerRingsList.begin()+currentRing);
+        --currentRing;
+      }
+    } for (int currentRing = 0; currentRing < (int)innerRingsList.size(); ++currentRing) {
+      if (innerRingsList[currentRing].size() < 3) {
+        std::cout << "\tFeature #" << feature->GetFID() << ": less than 3 vertices in inner boundary #" << currentRing << ". Removed." << std::endl;
+        innerRingsList.erase(innerRingsList.begin()+currentRing);
+        --currentRing;
+      }
+    }
+
+    std::vector<Ring> outerRings;
+    std::vector<Ring> innerRings;
+    outerRings.reserve(outerRingsList.size());
+    innerRings.reserve(innerRingsList.size());
+    for (unsigned int currentRing = 0; currentRing < outerRingsList.size(); currentRing++) {
+      outerRings.push_back(Ring(outerRingsList[currentRing].begin(), outerRingsList[currentRing].end()));
+      outerRingsList[currentRing].clear();
+    } for (unsigned int currentRing = 0; currentRing < innerRingsList.size(); currentRing++) {
+      innerRings.push_back(Ring(innerRingsList[currentRing].begin(), innerRingsList[currentRing].end()));
+      innerRingsList[currentRing].clear();
+    }
+
+    std::vector<Ring *> outerRingsToBuild;
+    std::vector<Ring *> innerRingsToClassify;
+    std::vector<std::vector<Ring> > innerRingsToBuild;
+
+    for (unsigned int currentRings = 0; currentRings < outerRings.size(); currentRings++) {
+      if (!outerRings[currentRings].is_simple()) {
+        std::cout << "\tFeature #" << feature->GetFID() << " (" << outerRings[currentRings].size() << " vertices): self intersecting outer boundary #" << currentRings << ". Split." << std::endl;
+        std::vector<Ring *> receivedRings = splitRing(outerRings[currentRings]);
+        for (std::vector<Ring *>::iterator currentRing = receivedRings.begin(); currentRing != receivedRings.end(); ++currentRing) {
+          if ((*currentRing)->is_clockwise_oriented()) {
+            outerRingsToBuild.push_back(*currentRing);
+          } else {
+            innerRingsToClassify.push_back(*currentRing);
+          }
+        }
+      } else {
+        if (outerRings[currentRings].is_counterclockwise_oriented()) {
+          std::cout << "\tFeature #" << feature->GetFID() << ": incorrect winding in outer boundary #" << currentRings << ". Reversed." << std::endl;
+          outerRings[currentRings].reverse_orientation();
+        } outerRingsToBuild.push_back(new Ring(outerRings[currentRings]));
+        outerRings[currentRings].clear();
+      }
+    }
+
+    for (unsigned int currentRings = 0; currentRings < innerRings.size(); currentRings++) {
+      if (!innerRings[currentRings].is_simple()) {
+        std::cout << "\tFeature #" << feature->GetFID() << " (" << innerRings[currentRings].size() << " vertices): self intersecting inner boundary #" << currentRings << ". Split." << std::endl;
+        std::vector<Ring *> receivedRings = splitRing(innerRings[currentRings]);
+        for (std::vector<Ring *>::iterator currentRing = receivedRings.begin(); currentRing != receivedRings.end(); ++currentRing) {
+          if ((*currentRing)->is_clockwise_oriented()) {
+            innerRingsToClassify.push_back(*currentRing);
+          } else {
+            outerRingsToBuild.push_back(*currentRing);
+          }
+        }
+      } else {
+        if (innerRings[currentRings].is_clockwise_oriented()) {
+          std::cout << "\tFeature #" << feature->GetFID() << ": incorrect winding in inner boundary #" << currentRings << ". Reversed." << std::endl;
+          innerRings[currentRings].reverse_orientation();
+        } innerRingsToClassify.push_back(new Ring(innerRings[currentRings]));
+        innerRings[currentRings].clear();
+      }
+    }
+
+    for (std::vector<Ring *>::iterator currentRing = outerRingsToBuild.begin(); currentRing != outerRingsToBuild.end(); ++currentRing) {
+      innerRingsToBuild.push_back(std::vector<Ring>());
+    }
+
+    if (outerRingsToBuild.size() == 0) {
+      std::cout << "\tFeature #" << feature->GetFID() << ": zero area outer boundary. Inner boundaries removed." << std::endl;
+      for (std::vector<Ring *>::iterator currentRing = innerRingsToClassify.begin(); currentRing != innerRingsToClassify.end(); ++currentRing) {
+        delete *currentRing;
+      }
+    }
+    else if (innerRingsToClassify.size() > 0) {
+      testRings(outerRingsToBuild, innerRingsToClassify, innerRingsToBuild, feature->GetFID());
+    }
+
+    for (unsigned int currentPolygon = 0; currentPolygon < outerRingsToBuild.size(); ++currentPolygon) {
+      polygonsVector.push_back(Polygon(*outerRingsToBuild[currentPolygon], innerRingsToBuild[currentPolygon].begin(), innerRingsToBuild[currentPolygon].end()));
+    } outerRingsToBuild.clear();
+    innerRingsToBuild.clear();
+
+    for (std::vector<Polygon>::iterator currentPolygon = polygonsVector.begin(); currentPolygon != polygonsVector.end(); ++currentPolygon) {
+      PolygonHandle *handle = new PolygonHandle(schemaIndex, fileNames.back(), currentLayer, feature->GetFID());
+      polygons.push_back(handle);
+
+      copyFields(feature, handle);
+
+      edgesToTag.push_back(std::pair<std::vector<Triangulation::Constraint_id>, std::vector<std::vector<Triangulation::Constraint_id>>>());
+
+      for (Ring::Edge_const_iterator currentEdge = currentPolygon->outer_boundary().edges_begin();
+           currentEdge != currentPolygon->outer_boundary().edges_end();
+           ++currentEdge) {
+        Triangulation::Vertex_handle sourceVertex = triangulation.insert(currentEdge->source(), startingSearchFace);
+        startingSearchFace = triangulation.incident_faces(sourceVertex);
+        Triangulation::Vertex_handle targetVertex = triangulation.insert(currentEdge->target(), startingSearchFace);
+        Triangulation::Constraint_id cid = triangulation.insert_constraint(sourceVertex, targetVertex);
+        startingSearchFace = triangulation.incident_faces(targetVertex);
+        edgesToTag.back().first.push_back(cid);
+      } for (Polygon::Hole_const_iterator currentRing = currentPolygon->holes_begin(); currentRing != currentPolygon->holes_end(); ++currentRing) {
+        edgesToTag.back().second.push_back(std::vector<Triangulation::Constraint_id>());
+        for (Ring::Edge_const_iterator currentEdge = currentRing->edges_begin(); currentEdge != currentRing->edges_end(); ++currentEdge) {
+          Triangulation::Vertex_handle sourceVertex = triangulation.insert(currentEdge->source(), startingSearchFace);
+          startingSearchFace = triangulation.incident_faces(sourceVertex);
+          Triangulation::Vertex_handle targetVertex = triangulation.insert(currentEdge->target(), startingSearchFace);
+          Triangulation::Constraint_id cid = triangulation.insert_constraint(sourceVertex, targetVertex);
+          startingSearchFace = triangulation.incident_faces(targetVertex);
+          edgesToTag.back().second.back().push_back(cid);
+        }
+      }
+    }
+
+    polygonsVector.clear();
+    OGRFeature::DestroyFeature(feature);
+  }
+
   return true;
 }
 
@@ -1361,6 +1359,89 @@ bool IOWorker::exportPolygons(std::vector<std::pair<PolygonHandle *, Polygon> > 
 	GDALClose(dataSource);
 	
 	return true;
+}
+
+bool IOWorker::exportPolygonsToPostGIS(std::vector<std::pair<PolygonHandle *, Polygon> > &outputPolygons, const char *connection, const char *tableName) {
+  GDALDataset *dataSource = (GDALDataset*) GDALOpenEx(connection, GDAL_OF_UPDATE | GDAL_OF_VECTOR, NULL, NULL, NULL);
+  if (dataSource == NULL) {
+    std::cout << "\tError: Could not open PostGIS connection for writing." << std::endl;
+    return false;
+  }
+
+  OGRLayer *layer = dataSource->GetLayerByName(tableName);
+  if (layer == NULL) {
+    std::cout << "\tCreating PostGIS table " << tableName << "..." << std::endl;
+    layer = dataSource->CreateLayer(tableName, spatialReference, wkbPolygon, NULL);
+    if (layer == NULL) {
+      std::cout << "\tError: Could not create PostGIS table." << std::endl;
+      GDALClose(dataSource);
+      return false;
+    }
+    OGRFieldDefn idField("id", schemaFieldType);
+    if (layer->CreateField(&idField) != OGRERR_NONE) {
+      std::cout << "\tError: Could not create id field in PostGIS table." << std::endl;
+      GDALClose(dataSource);
+      return false;
+    }
+  } else {
+    if (layer->FindFieldIndex("id", false) < 0) {
+      OGRFieldDefn idField("id", schemaFieldType);
+      if (layer->CreateField(&idField) != OGRERR_NONE) {
+        std::cout << "\tError: Existing PostGIS table has no 'id' field and it could not be created." << std::endl;
+        GDALClose(dataSource);
+        return false;
+      }
+    }
+  }
+
+  std::cout << "\tAppending rows to PostGIS table..." << std::endl;
+  for (std::vector<std::pair<PolygonHandle *, Polygon> >::iterator currentPolygon = outputPolygons.begin(); currentPolygon != outputPolygons.end(); ++currentPolygon) {
+    if (currentPolygon->second.outer_boundary().size() < 1) continue;
+
+    OGRPolygon polygon;
+    OGRLinearRing outerRing;
+    for (Ring::Vertex_iterator currentVertex = currentPolygon->second.outer_boundary().vertices_begin();
+         currentVertex != currentPolygon->second.outer_boundary().vertices_end();
+         ++currentVertex) {
+      outerRing.addPoint(CGAL::to_double(currentVertex->x()), CGAL::to_double(currentVertex->y()));
+    }
+    outerRing.addPoint(CGAL::to_double(currentPolygon->second.outer_boundary().vertex(0).x()), CGAL::to_double(currentPolygon->second.outer_boundary().vertex(0).y()));
+    polygon.addRing(&outerRing);
+
+    for (Polygon::Hole_const_iterator currentRing = currentPolygon->second.holes_begin(); currentRing != currentPolygon->second.holes_end(); ++currentRing) {
+      OGRLinearRing innerRing;
+      for (Ring::Vertex_iterator currentVertex = currentRing->vertices_begin(); currentVertex != currentRing->vertices_end(); ++currentVertex) {
+        innerRing.addPoint(CGAL::to_double(currentVertex->x()), CGAL::to_double(currentVertex->y()));
+      }
+      innerRing.addPoint(CGAL::to_double(currentRing->vertex(0).x()), CGAL::to_double(currentRing->vertex(0).y()));
+      polygon.addRing(&innerRing);
+    }
+
+    OGRFeature *feature = OGRFeature::CreateFeature(layer->GetLayerDefn());
+    Field *schemaField = currentPolygon->first->getSchemaField();
+    if (schemaField != NULL) {
+      switch (schemaField->getType()) {
+        case OFTString:
+          feature->SetField("id", schemaField->getValueAsString());
+          break;
+        case OFTReal:
+          feature->SetField("id", schemaField->getValueAsDouble());
+          break;
+        case OFTInteger:
+          feature->SetField("id", schemaField->getValueAsInt());
+          break;
+        default:
+          break;
+      }
+    }
+
+    feature->SetGeometry(&polygon);
+    if (layer->CreateFeature(feature) != OGRERR_NONE) std::cout << "\tError: Could not append feature to PostGIS table." << std::endl;
+    OGRFeature::DestroyFeature(feature);
+  }
+
+  GDALClose(dataSource);
+  return true;
 }
 
 bool IOWorker::exportTriangulation(Triangulation &t, const char *file, bool withNumberOfTags, bool withFields, bool withProvenance) {

@@ -106,6 +106,7 @@ public:
   Field * getSchemaField();
   Field * getField(unsigned int i);
 	unsigned long getNumberOfFields();
+  unsigned int getSchemaIndex() const;
   
   // Checking whether it's a MultiPolygonHandle
 	virtual const bool isMultiPolygonHandle();
